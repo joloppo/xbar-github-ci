@@ -154,15 +154,33 @@ def save_state(state):
         pass  # Non-critical; notifications just won't work next run
 
 
-def send_notification(title, message):
-    """Send a macOS notification via osascript."""
-    script = f'display notification "{message}" with title "{title}"'
+NOTIFICATION_ICON = "https://github.githubassets.com/favicons/favicon.png"
+
+
+def send_notification(title, message, url=None):
+    """Send a macOS notification, preferring terminal-notifier for custom icons."""
+    notifier = shutil.which("terminal-notifier")
     try:
-        subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            timeout=5,
-        )
+        if notifier:
+            cmd = [
+                notifier,
+                "-title",
+                title,
+                "-message",
+                message,
+                "-appIcon",
+                NOTIFICATION_ICON,
+            ]
+            if url:
+                cmd += ["-open", url]
+            subprocess.run(cmd, capture_output=True, timeout=5)
+        else:
+            script = f'display notification "{message}" with title "{title}"'
+            subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                timeout=5,
+            )
     except (subprocess.TimeoutExpired, OSError):
         pass  # Non-critical
 
@@ -193,7 +211,8 @@ def check_and_notify(current_pr_states):
 
         label = STATE_LABELS.get(curr_state, curr_state)
         title = current.get("title", pr_key)
-        send_notification("GitHub CI", f"{title} {label}")
+        pr_url = current.get("url")
+        send_notification("GitHub CI", f"{title} {label}", url=pr_url)
 
     save_state(current_pr_states)
 
@@ -362,6 +381,7 @@ def main():
         current_pr_states[pr_key] = {
             "state": pr_state,
             "title": f"{repo}#{number}: {title}",
+            "url": pr_url,
         }
 
         lines.append(format_line(pr_state, f"{repo}#{number}: {title}", pr_url))
