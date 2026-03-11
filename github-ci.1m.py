@@ -131,50 +131,53 @@ STATE_LABELS = {
     "warning": "has warnings",
 }
 
-# --- State persistence ---
-# State file lives alongside the plugin, e.g. github-ci.1m.py.state.json
-STATE_FILE = os.path.realpath(__file__) + ".state.json"
-
-# --- Hidden PRs ---
-# Stores a list of PR keys (e.g. "owner/repo#123") the user has chosen to hide
-HIDDEN_FILE = os.path.realpath(__file__) + ".hidden.json"
+# --- Persistence ---
+# All plugin data (PR state, hidden PRs) is stored in a single JSON file
+# in the home directory to avoid xbar treating .json files as plugins.
+DATA_FILE = os.path.expanduser("~/.xbar_github_ci.json")
 SELF_PATH = os.path.realpath(__file__)
 
 
-def load_state():
-    """Load the previous run's state from disk."""
+def _load_data():
+    """Load the entire data file."""
     try:
-        with open(STATE_FILE, "r") as f:
+        with open(DATA_FILE, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
 
-def save_state(state):
-    """Persist current state to disk."""
+def _save_data(data):
+    """Write the entire data file."""
     try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f, indent=2)
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=2)
     except OSError:
-        pass  # Non-critical; notifications just won't work next run
+        pass
+
+
+def load_state():
+    """Load the previous run's PR state from disk."""
+    return _load_data().get("state", {})
+
+
+def save_state(state):
+    """Persist current PR state to disk."""
+    data = _load_data()
+    data["state"] = state
+    _save_data(data)
 
 
 def load_hidden():
     """Load the set of hidden PR keys from disk."""
-    try:
-        with open(HIDDEN_FILE, "r") as f:
-            return set(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return set()
+    return set(_load_data().get("hidden", []))
 
 
 def save_hidden(hidden):
     """Persist hidden PR keys to disk."""
-    try:
-        with open(HIDDEN_FILE, "w") as f:
-            json.dump(sorted(hidden), f, indent=2)
-    except OSError:
-        pass
+    data = _load_data()
+    data["hidden"] = sorted(hidden)
+    _save_data(data)
 
 
 def handle_hide_unhide():
