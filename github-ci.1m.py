@@ -202,11 +202,9 @@ def check_and_notify(current_pr_states):
         prev_state = prev.get("state", "pending")
         curr_state = current["state"]
 
-        # Only notify on meaningful transitions:
-        #   pending/warning -> success/failure/error
-        #   success -> failure/error
-        #   failure/error -> success
-        if curr_state == "pending":
+        # Only notify when all checks have settled (no pending/warning)
+        # and the overall PR state actually changed.
+        if curr_state in ("pending", "warning"):
             continue
 
         label = STATE_LABELS.get(curr_state, curr_state)
