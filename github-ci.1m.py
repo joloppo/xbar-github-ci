@@ -344,7 +344,6 @@ def main():
 
             # Legacy commit statuses (e.g. external CI integrations)
             combined = get_combined_status(repo, head_sha)
-            pr_state = combined.get("state", "pending")
             for status in combined.get("statuses", []):
                 checks.append(
                     {
@@ -369,7 +368,16 @@ def main():
                         "url": run.get("html_url") or run.get("details_url") or pr_url,
                     }
                 )
-                pr_state = worst_state(pr_state, state)
+
+            # Derive PR state from the actual checks rather than trusting
+            # the combined status API (which returns "pending" when there
+            # are no legacy statuses, even if all check runs passed).
+            if checks:
+                pr_state = "success"
+                for check in checks:
+                    pr_state = worst_state(pr_state, check["state"])
+            else:
+                pr_state = "success"
 
         except RuntimeError:
             pr_state = "error"
