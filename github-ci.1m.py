@@ -443,8 +443,9 @@ def main():
         lines.append(format_line(pr_state, f"{repo}#{number}: {title}", pr_url))
         # Hide action as a submenu item under each PR
         lines.append(
-            f"--Hide this PR | shell={SELF_PATH} param1=--hide param2={pr_key}"
-            f" terminal=false refresh=true"
+            f'--Hide this PR | shell="{SELF_PATH}"'
+            f" | param1=--hide | param2={pr_key}"
+            f" | terminal=false | refresh=true"
         )
         for check in checks:
             lines.append(
@@ -472,8 +473,9 @@ def main():
             color = STATUS_COLORS.get(pr_state, "gray")
             print(f"--{icon} {pr_title} | href={pr_url} color={color}")
             print(
-                f"--Unhide this PR | shell={SELF_PATH} param1=--unhide"
-                f" param2={pr_key} terminal=false refresh=true"
+                f'--Unhide this PR | shell="{SELF_PATH}"'
+                f" | param1=--unhide | param2={pr_key}"
+                f" | terminal=false | refresh=true"
             )
 
 
