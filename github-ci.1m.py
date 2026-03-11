@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <xbar.title>Github CI Status</xbar.title>
-# <xbar.version>v2.1</xbar.version>
+# <xbar.version>v2.2</xbar.version>
 # <xbar.author>Joscha Gutjahr</xbar.author>
 # <xbar.author.github>joloppo</xbar.author.github>
 # <xbar.desc>Displays Github Pull Request CI Check statuses using the gh CLI</xbar.desc>
@@ -135,6 +135,11 @@ STATE_LABELS = {
 # State file lives alongside the plugin, e.g. github-ci.1m.py.state.json
 STATE_FILE = os.path.realpath(__file__) + ".state.json"
 
+# --- Hidden PRs ---
+# Stores a list of PR keys (e.g. "owner/repo#123") the user has chosen to hide
+HIDDEN_FILE = os.path.realpath(__file__) + ".hidden.json"
+SELF_PATH = os.path.realpath(__file__)
+
 
 def load_state():
     """Load the previous run's state from disk."""
@@ -152,6 +157,41 @@ def save_state(state):
             json.dump(state, f, indent=2)
     except OSError:
         pass  # Non-critical; notifications just won't work next run
+
+
+def load_hidden():
+    """Load the set of hidden PR keys from disk."""
+    try:
+        with open(HIDDEN_FILE, "r") as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return set()
+
+
+def save_hidden(hidden):
+    """Persist hidden PR keys to disk."""
+    try:
+        with open(HIDDEN_FILE, "w") as f:
+            json.dump(sorted(hidden), f, indent=2)
+    except OSError:
+        pass
+
+
+def handle_hide_unhide():
+    """Handle --hide / --unhide CLI arguments and exit."""
+    if len(sys.argv) < 3:
+        return False
+    action = sys.argv[1]
+    pr_key = sys.argv[2]
+    if action not in ("--hide", "--unhide"):
+        return False
+    hidden = load_hidden()
+    if action == "--hide":
+        hidden.add(pr_key)
+    elif action == "--unhide":
+        hidden.discard(pr_key)
+    save_hidden(hidden)
+    return True
 
 
 NOTIFICATION_ICON = "https://github.githubassets.com/favicons/favicon.png"
@@ -294,6 +334,10 @@ def format_line(state, text, url, indent=0):
 
 
 def main():
+    # Handle hide/unhide actions triggered from the menu
+    if handle_hide_unhide():
+        return
+
     if not USERNAME:
         print(f":octocat: GH CI | templateImage={ICON}")
         print("---")
@@ -326,6 +370,8 @@ def main():
     overall_state = "success"
     lines = []
     current_pr_states = {}
+    hidden = load_hidden()
+    hidden_prs = []  # Track hidden PRs for the submenu
 
     for pr in pull_requests:
         repo = pr["repository_url"].replace("https://api.github.com/repos/", "")
@@ -381,8 +427,6 @@ def main():
             pr_state = "error"
             checks = []
 
-        overall_state = worst_state(overall_state, pr_state)
-
         pr_key = f"{repo}#{number}"
         current_pr_states[pr_key] = {
             "state": pr_state,
@@ -390,7 +434,18 @@ def main():
             "url": pr_url,
         }
 
+        if pr_key in hidden:
+            hidden_prs.append((pr_key, pr_state, f"{repo}#{number}: {title}", pr_url))
+            continue
+
+        overall_state = worst_state(overall_state, pr_state)
+
         lines.append(format_line(pr_state, f"{repo}#{number}: {title}", pr_url))
+        # Hide action as a submenu item under each PR
+        lines.append(
+            f"--Hide this PR | shell={SELF_PATH} param1=--hide param2={pr_key}"
+            f" terminal=false refresh=true"
+        )
         for check in checks:
             lines.append(
                 format_line(check["state"], check["name"], check["url"], indent=1)
@@ -403,7 +458,23 @@ def main():
     bar_icon = STATUS_ICONS.get(overall_state, ":octocat:")
     print(f"{bar_icon} | templateImage={ICON}")
     print("---")
-    print("\n".join(lines))
+    if lines:
+        print("\n".join(lines))
+    else:
+        print("All PRs are hidden | color=gray")
+
+    # Hidden PRs submenu
+    if hidden_prs:
+        print("---")
+        print(f"Hidden ({len(hidden_prs)})")
+        for pr_key, pr_state, pr_title, pr_url in hidden_prs:
+            icon = STATUS_ICONS.get(pr_state, ":grey_question:")
+            color = STATUS_COLORS.get(pr_state, "gray")
+            print(f"--{icon} {pr_title} | href={pr_url} color={color}")
+            print(
+                f"--Unhide this PR | shell={SELF_PATH} param1=--unhide"
+                f" param2={pr_key} terminal=false refresh=true"
+            )
 
 
 if __name__ == "__main__":
