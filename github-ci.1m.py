@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <xbar.title>Github CI Status</xbar.title>
-# <xbar.version>v2.2</xbar.version>
+# <xbar.version>v2.3</xbar.version>
 # <xbar.author>Joscha Gutjahr</xbar.author>
 # <xbar.author.github>joloppo</xbar.author.github>
 # <xbar.desc>Displays Github Pull Request CI Check statuses using the gh CLI</xbar.desc>
@@ -131,6 +131,27 @@ STATE_LABELS = {
     "warning": "has warnings",
 }
 
+# --- Review / approval state ---
+# Map GitHub review states to a unified review status.
+# The API returns: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING.
+REVIEW_ICONS = {
+    "approved": ":white_check_mark:",
+    "changes_requested": ":x:",
+    "review_pending": ":hourglass:",
+}
+
+REVIEW_COLORS = {
+    "approved": "green",
+    "changes_requested": "red",
+    "review_pending": "blue",
+}
+
+REVIEW_LABELS = {
+    "approved": "approved",
+    "changes_requested": "changes requested",
+    "review_pending": "review pending",
+}
+
 # --- Persistence ---
 # All plugin data (PR state, hidden PRs) is stored in a single JSON file
 # in the home directory to avoid xbar treating .json files as plugins.
@@ -235,25 +256,30 @@ def check_and_notify(current_pr_states):
     for pr_key, current in current_pr_states.items():
         prev = previous.get(pr_key)
 
-        # Skip if this PR is new (first time seeing it) or state unchanged
+        # Skip if this PR is new (first time seeing it)
         if prev is None:
             continue
-        if prev.get("state") == current["state"]:
-            continue
-        # Skip transitions from one non-terminal state to another
-        # (e.g. pending -> pending is already filtered above)
-        prev_state = prev.get("state", "pending")
-        curr_state = current["state"]
 
-        # Only notify when all checks have settled (no pending/warning)
-        # and the overall PR state actually changed.
-        if curr_state in ("pending", "warning"):
-            continue
-
-        label = STATE_LABELS.get(curr_state, curr_state)
         title = current.get("title", pr_key)
         pr_url = current.get("url")
-        send_notification("GitHub CI", f"{title} {label}", url=pr_url)
+
+        # --- CI status notifications ---
+        if prev.get("state") != current["state"]:
+            curr_state = current["state"]
+            # Only notify when all checks have settled (no pending/warning)
+            if curr_state not in ("pending", "warning"):
+                label = STATE_LABELS.get(curr_state, curr_state)
+                send_notification("GitHub CI", f"{title} {label}", url=pr_url)
+
+        # --- Review / approval notifications ---
+        prev_review = prev.get("review_state", "review_pending")
+        curr_review = current.get("review_state", "review_pending")
+        if prev_review != curr_review and curr_review in (
+            "approved",
+            "changes_requested",
+        ):
+            review_label = REVIEW_LABELS.get(curr_review, curr_review)
+            send_notification("GitHub Review", f"{title} {review_label}", url=pr_url)
 
     save_state(current_pr_states)
 
@@ -321,11 +347,48 @@ def get_check_runs(repo, sha):
     return gh_api(f"repos/{repo}/commits/{sha}/check-runs")
 
 
+def get_reviews(repo, number):
+    """Fetch reviews for a pull request."""
+    return gh_api(f"repos/{repo}/pulls/{number}/reviews")
+
+
 def worst_state(a, b):
     """Return the more severe of two states."""
     if STATE_PRIORITY.get(b, 0) > STATE_PRIORITY.get(a, 0):
         return b
     return a
+
+
+def compute_review_state(reviews):
+    """Compute the effective review state from a list of PR reviews.
+
+    GitHub returns all reviews chronologically.  We keep the last
+    actionable review (APPROVED / CHANGES_REQUESTED / DISMISSED) per
+    reviewer and derive a single aggregate state:
+      - If any reviewer has requested changes -> "changes_requested"
+      - Else if at least one approval exists  -> "approved"
+      - Otherwise                             -> "review_pending"
+    """
+    # Latest actionable state per reviewer login
+    by_reviewer = {}
+    for review in reviews:
+        state = review.get("state", "").upper()
+        if state in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            login = review.get("user", {}).get("login", "unknown")
+            by_reviewer[login] = state
+
+    if not by_reviewer:
+        return "review_pending"
+
+    # DISMISSED effectively removes that reviewer's vote
+    active = [s for s in by_reviewer.values() if s != "DISMISSED"]
+    if not active:
+        return "review_pending"
+    if "CHANGES_REQUESTED" in active:
+        return "changes_requested"
+    if "APPROVED" in active:
+        return "approved"
+    return "review_pending"
 
 
 def format_line(state, text, url, indent=0):
@@ -426,19 +489,27 @@ def main():
             else:
                 pr_state = "success"
 
+            # Fetch PR reviews and compute approval state
+            reviews_data = get_reviews(repo, number)
+            review_state = compute_review_state(reviews_data)
+
         except RuntimeError:
             pr_state = "error"
             checks = []
+            review_state = "review_pending"
 
         pr_key = f"{repo}#{number}"
         current_pr_states[pr_key] = {
             "state": pr_state,
+            "review_state": review_state,
             "title": f"{repo}#{number}: {title}",
             "url": pr_url,
         }
 
         if pr_key in hidden:
-            hidden_prs.append((pr_key, pr_state, f"{repo}#{number}: {title}", pr_url))
+            hidden_prs.append(
+                (pr_key, pr_state, review_state, f"{repo}#{number}: {title}", pr_url)
+            )
             continue
 
         overall_state = worst_state(overall_state, pr_state)
@@ -449,6 +520,13 @@ def main():
             f'--Hide this PR | shell="{SELF_PATH}"'
             f" | param1=--hide | param2={pr_key}"
             f" | terminal=false | refresh=true"
+        )
+        # Review / approval status
+        review_icon = REVIEW_ICONS.get(review_state, ":grey_question:")
+        review_color = REVIEW_COLORS.get(review_state, "gray")
+        review_label = REVIEW_LABELS.get(review_state, review_state)
+        lines.append(
+            f"--{review_icon} Review: {review_label} | href={pr_url} color={review_color}"
         )
         for check in checks:
             lines.append(
@@ -471,10 +549,17 @@ def main():
     if hidden_prs:
         print("---")
         print(f"Hidden ({len(hidden_prs)})")
-        for pr_key, pr_state, pr_title, pr_url in hidden_prs:
+        for pr_key, pr_state, review_state, pr_title, pr_url in hidden_prs:
             icon = STATUS_ICONS.get(pr_state, ":grey_question:")
             color = STATUS_COLORS.get(pr_state, "gray")
             print(f"--{icon} {pr_title} | href={pr_url} color={color}")
+            review_icon = REVIEW_ICONS.get(review_state, ":grey_question:")
+            review_color = REVIEW_COLORS.get(review_state, "gray")
+            review_label = REVIEW_LABELS.get(review_state, review_state)
+            print(
+                f"----{review_icon} Review: {review_label}"
+                f" | href={pr_url} color={review_color}"
+            )
             print(
                 f'--Unhide this PR | shell="{SELF_PATH}"'
                 f" | param1=--unhide | param2={pr_key}"
